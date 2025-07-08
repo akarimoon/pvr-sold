@@ -173,3 +173,9 @@ cython_debug/
 # Ignore experiments and local configurations.
 /experiments
 /configs/local/default.yaml
+
+logs/
+fetch-block-construction/
+multi-object-fetch/
+ROMs/
+sold/scripts/
