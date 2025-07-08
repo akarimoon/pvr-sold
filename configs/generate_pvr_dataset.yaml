@@ -1,0 +1,24 @@
+defaults:
+  - hydra: default
+  - _self_
+
+experiment: "my_dataset"
+save_format: "npz"
+
+num_train: 20_000  # Number of episodes in the 'train' split.
+num_val: 2_000
+num_test: 2_000
+
+num_workers: 8
+
+env:
+  _target_: envs.make_env
+  suite: gym  # Should be "mof", "gym", or "dmcontrol".
+  name: Boxing-v4
+  image_size: [ 224, 224 ]
+  max_episode_steps: 25
+  action_repeat: 4
+  vit_model: facebook/dinov2-base
+  use_cls_token: false
+  freeze_vit: true
+  vit_cache_dir: /scratch/
