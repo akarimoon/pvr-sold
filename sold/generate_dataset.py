@@ -24,7 +24,7 @@ def save_episode(path: str, cfg: DictConfig) -> None:
     save_image(obs)
 
     while not done:
-        action = torch.from_numpy(env.action_space.sample().astype(np.float32))
+        action = torch.from_numpy(np.array(env.action_space.sample()).astype(np.float32))
         obs, reward, done, _ = env.step(action)
         step_count += 1
         save_image(obs)
