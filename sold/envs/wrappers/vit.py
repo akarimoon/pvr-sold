@@ -57,10 +57,10 @@ class ViTWrapper(gym.Wrapper):
 
     def reset(self):
         obs = self.env.reset()
-        obs = self._encode(obs)
-        return obs
+        obs_vit = self._encode(obs)
+        return {"feat": obs_vit, "image": obs}
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action.to(torch.int))
-        obs = self._encode(obs)
-        return obs, reward, done, info
+        obs_vit = self._encode(obs)
+        return {"feat": obs_vit, "image": obs}, reward, done, info

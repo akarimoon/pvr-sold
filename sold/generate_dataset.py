@@ -14,12 +14,17 @@ def save_episode(path: str, cfg: DictConfig) -> None:
             ToPILImage()(image).save(os.path.join(path, f'{step_count}.png'))
         elif cfg.save_format == "npz":
             images.append(np.array(ToPILImage()(image)))
+        elif cfg.save_format == "feat_npz":
+            feat = image["feat"]
+            image = image["image"]
+            features.append(feat)
+            images.append(np.array(ToPILImage()(image)))
         else:
             raise ValueError(f"Unsupported save format: {cfg.save_format}")
 
     os.mkdir(path)
     env = hydra.utils.instantiate(cfg.env)
-    step_count, images, actions, rewards = 0, [], [], []
+    step_count, images, features, actions, rewards = 0, [], [], [], []
     obs, done = env.reset(), False
     save_image(obs)
 
@@ -32,8 +37,10 @@ def save_episode(path: str, cfg: DictConfig) -> None:
         rewards.append(reward)
 
     episode_dict = {"actions": np.stack(actions), "rewards": np.array(rewards)}
-    if cfg.save_format == "npz":
+    if cfg.save_format == "npz" or cfg.save_format == "feat_npz":
         episode_dict["images"] = np.stack(images)
+    if cfg.save_format == "feat_npz":
+        episode_dict["features"] = np.stack(features)
     np.savez_compressed(os.path.join(path, 'episode.npz'), **episode_dict)
 
 
