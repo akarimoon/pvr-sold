@@ -84,12 +84,14 @@ class PVRWithSAVi(Autoencoder):
     def decode(self, slots: torch.Tensor) -> Dict[str, torch.Tensor]:
         batch_size, sequence_length, num_slots, slot_dim = slots.size()
         patches, masks = self.decoder(slots.flatten(end_dim=1))
-        patches = patches.view(batch_size, sequence_length, num_slots, self.decoder.num_patches, -1)
 
-        masks_as_image = resize_patches_to_image(masks.squeeze(-1), size=self.decoder.num_patches, resize_mode="bilinear")
+        masks_as_image = resize_patches_to_image(masks.squeeze(-1), size=self.decoder.image_size[0], resize_mode="bilinear")
         masks_as_image = masks_as_image.unsqueeze(-1)
+
+        patches = patches.view(batch_size, sequence_length, num_slots, self.decoder.num_patches, -1)
+        masks = masks.view(batch_size, sequence_length, num_slots, self.decoder.num_patches, 1)
         masks_as_image = masks_as_image.view(batch_size, sequence_length, num_slots, 1, *self.decoder.image_size)
-        return {"reconstructions": torch.sum(patches * masks, dim=1), "patches": patches, "masks": masks_as_image}
+        return {"reconstructions": torch.sum(patches * masks, dim=2), "patches": patches, "masks": masks_as_image}
 
     def forward(self, vit_features: torch.Tensor, actions: torch.Tensor, prior_slots: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         batch_size, sequence_length, num_patches, vit_feature_dim = vit_features.size()
@@ -105,15 +107,15 @@ class PVRWithSAVi(Autoencoder):
 
     @torch.no_grad()
     def visualize_reconstruction(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        sequence_length, num_slots, _, height, width = outputs["rgbs"].size()
+        sequence_length, _, height, width = outputs["images"].size()
+        _, num_slots, _, _ = outputs["patches"].size()
         rows = []
         if "images" in outputs:
             rows.append(make_row(outputs["images"].cpu()))
-        rows.append(make_row(outputs["reconstructions"].cpu()))
         images = outputs["images"].cpu() if "images" in outputs else torch.zeros_like(outputs["reconstructions"].cpu())
         rows.append(make_row(create_segmentation_overlay(images, outputs["masks"].cpu(),
                                                          background_brightness=0.0)))
-        individual_slots = outputs["masks"].cpu() * outputs["rgbs"].cpu()
+        individual_slots = outputs["masks"].cpu() * outputs["images"].unsqueeze(1).expand(-1, num_slots, -1, -1, -1).cpu()
         rows.extend(make_row(individual_slots[:, slot_index], pad_color=slot_color(slot_index, num_slots))
                     for slot_index in range(num_slots))
 

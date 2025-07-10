@@ -53,6 +53,45 @@ class AutoencoderModule(LoggingStepMixin, LightningModule):
         return None
 
 
+class PVRAutoencoderModule(LoggingStepMixin, LightningModule):
+    def __init__(self, autoencoder: Autoencoder, optimizer: Callable[[Iterable], Optimizer],
+                 scheduler: Optional[DictConfig] = None) -> None:
+        super().__init__()
+        self.autoencoder = autoencoder
+        self._create_optimizer = optimizer
+        self._scheduler_params = scheduler
+        self.save_hyperparameters(logger=False)
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        optimizer = self._create_optimizer(self.autoencoder.parameters())
+        if self._scheduler_params is not None:
+            scheduler = self._scheduler_params.scheduler(optimizer)
+            scheduler_dict = {"scheduler": scheduler}
+            if self._scheduler_params.get("extras"):
+                for key, value in self._scheduler_params.get("extras").items():
+                    scheduler_dict[key] = value
+            return {"optimizer": optimizer, "lr_scheduler": scheduler_dict}
+        return {"optimizer": optimizer}
+
+    def compute_reconstruction_loss(self, images: torch.Tensor, features: torch.Tensor, actions: torch.Tensor) -> Dict[str, Any]:
+        outputs = self.autoencoder(features, actions[:, 1:])
+        loss = F.mse_loss(outputs["reconstructions"], features)
+        return {**outputs, "reconstruction_loss": loss, "images": images}
+
+    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_index: int) -> STEP_OUTPUT:
+        images, features, actions = batch
+        outputs = self.compute_reconstruction_loss(images, features, actions)
+        self.log("train/reconstruction_loss", outputs["reconstruction_loss"], prog_bar=True)
+        return {**outputs, "loss": outputs["reconstruction_loss"]}
+
+    def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_index: int) -> STEP_OUTPUT:
+        images, features, actions = batch
+        outputs = self.compute_reconstruction_loss(images, features, actions)
+        self.log("valid/reconstruction_loss", outputs["reconstruction_loss"], prog_bar=True)
+        self.log("valid_loss", outputs["reconstruction_loss"], logger=False)  # Used in checkpoint names.
+        return None
+
+
 def load_autoencoder(checkpoint_path: str):
     autoencoder_module = AutoencoderModule.load_from_checkpoint(checkpoint_path)
     return autoencoder_module.autoencoder

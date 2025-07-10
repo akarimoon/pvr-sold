@@ -28,9 +28,9 @@ class DINOSAURDecoder(nn.Module):
             raise ValueError(f"Expected slot dimension to be {self.slot_dim}, but got {slot_dim}")
 
         slots = slots.reshape(-1, slot_dim).unsqueeze(1).expand(-1, self.num_patches, -1)  # Spatial broadcasting -> Shape: (B * num_slots, num_patches, slot_dim)
-        slots = slots + self.positional_embedding(slots)
+        slots = slots + self.positional_embedding
         decoded = self.mlp(slots)
         decoded = decoded.reshape(batch_size, num_slots, self.num_patches, -1)
-        patches, mask_logits = decoded.split([self.vit_feature_dim, 1], dim=2)
+        patches, mask_logits = decoded.split([self.vit_feature_dim, 1], dim=-1)
         masks = F.softmax(mask_logits, dim=1)
         return patches, masks
