@@ -2,8 +2,8 @@ defaults:
   - hydra: default
   - _self_
 
-experiment: "my_dataset"
-save_format: "npz"
+experiment: "atari_Boxing"
+save_format: "feat_npz"
 
 num_train: 20_000  # Number of episodes in the 'train' split.
 num_val: 2_000

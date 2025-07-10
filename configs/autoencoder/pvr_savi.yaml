@@ -1,0 +1,33 @@
+_target_: modeling.autoencoder.pvr4mbrl.autoencoder.PVRWithSAVi
+corrector:
+  _target_: modeling.autoencoder.savi.Corrector
+  num_slots: 5  # Number of slots to decompose the image.
+  slot_dim: 128  # Dimension of each slot.
+  feature_dim: ${..encoder.feature_dim}
+  hidden_dim: 128
+  num_iterations: 1
+  num_initial_iterations: 3
+
+predictor:
+  _target_: modeling.autoencoder.savi.predictor.TransformerPredictor
+  slot_dim: ${..corrector.slot_dim}
+  action_dim: '???'  # Dimension of the action-space gets queried from the dataset.
+
+encoder:
+  _target_: modeling.autoencoder.pvr4mbrl.encoder.MLPEncoder
+  vit_feature_dim: 768
+  hidden_dims: [ 256, 256 ]
+  feature_dim: 256
+
+decoder:
+  _target_: modeling.autoencoder.pvr4mbrl.decoder.DINOSAURDecoder
+  image_size: [ 224, 224 ]
+  num_patches: 256
+  vit_feature_dim: 768
+  hidden_dims: [ 1024, 1024, 1024 ]
+  inp_dim: ${..corrector.slot_dim}
+
+initializer:
+  _target_: modeling.autoencoder.savi.initializer.Learned
+  num_slots: ${..corrector.num_slots}
+  slot_dim: ${..corrector.slot_dim}

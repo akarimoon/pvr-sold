@@ -1,0 +1,37 @@
+defaults:
+  - autoencoder: pvr_savi  # Select the autoencoder architecture to train (cnn, savi)
+  - callbacks: pvr_autoencoder
+  - hydra: default
+  - logger: wandb
+  - trainer: gradient_clipping
+  - _self_
+
+checkpoint: ""
+experiment: "atari_Boxing"
+seed: 42
+
+dataset:
+  _target_: datasets.pvr.load_feature_dataset
+  path: ../experiments/generate_pvr_dataset/atari_Boxing
+  data_dir: 2025-07-09_13-15-26
+  num_workers: 8
+  batch_size: 64
+  sequence_length: 8
+
+model:
+  _target_: train_autoencoder.PVRAutoencoderModule
+  autoencoder: ${..autoencoder}
+
+  optimizer:
+    _target_: torch.optim.Adam
+    _partial_: True
+    lr: 0.0001
+
+  scheduler:
+    scheduler:
+      _target_: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
+      _partial_: True
+      warmup_epochs: 10  # Number of warmup epochs.
+      max_epochs: ${....trainer.max_epochs}
+    extras:
+      interval: "epoch"
