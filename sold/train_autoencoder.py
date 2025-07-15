@@ -9,6 +9,8 @@ from termcolor import colored
 import torch
 import torch.nn.functional as F
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from dotenv import load_dotenv
+
 from utils.instantiate import instantiate_trainer, instantiate_dataloaders, fill_in_missing
 from utils.logging import LoggingStepMixin
 from utils.training import set_seed
@@ -99,6 +101,8 @@ def load_autoencoder(checkpoint_path: str):
 
 @hydra.main(config_path="../configs", config_name="train_autoencoder", version_base=None)
 def train(cfg: DictConfig):
+    load_dotenv(".env")
+    
     set_seed(cfg.seed)
     trainer = instantiate_trainer(cfg)
     cfg.dataset.batch_size = cfg.dataset.batch_size // trainer.world_size  # Adjust batch size for distributed training.
