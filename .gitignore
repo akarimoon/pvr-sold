@@ -179,3 +179,4 @@ fetch-block-construction/
 multi-object-fetch/
 ROMs/
 sold/scripts/
+sold/wandb/
