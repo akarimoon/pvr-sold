@@ -7,13 +7,13 @@ defaults:
   - _self_
 
 checkpoint: ""
-experiment: "atari_Boxing"
+experiment: "atari_ood_Boxing"
 seed: 42
 
 dataset:
   _target_: datasets.pvr.load_feature_dataset
-  path: ../experiments/generate_pvr_dataset/atari_Boxing
-  data_dir: 2025-07-09_13-15-26
+  path: ../experiments/generate_pvr_dataset/atari_ood_Boxing
+  data_dir: 2025-07-10_22-43-05
   num_workers: 8
   batch_size: 64
   sequence_length: 8

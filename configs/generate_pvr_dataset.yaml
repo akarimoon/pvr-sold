@@ -2,7 +2,7 @@ defaults:
   - hydra: default
   - _self_
 
-experiment: "atari_Boxing"
+experiment: "atari_ood_Boxing"
 save_format: "feat_npz"
 
 num_train: 20_000  # Number of episodes in the 'train' split.
@@ -13,7 +13,7 @@ num_workers: 8
 
 env:
   _target_: envs.make_env
-  suite: gym  # Should be "mof", "gym", or "dmcontrol".
+  suite: ood_gym  # Should be "mof", "gym", or "dmcontrol".
   name: Boxing-v4
   image_size: [ 224, 224 ]
   max_episode_steps: 25
