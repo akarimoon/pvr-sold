@@ -80,7 +80,7 @@ class OnlineProgressBar(RichProgressBar):
 class OnlineModule(LoggingStepMixin, LightningModule, ABC):
     def __init__(self, env: gym.Env, max_steps: int, num_seed: int, update_freq: int, num_updates: int,
                  eval_freq: int, num_eval_episodes: int, batch_size: int, sequence_length: int, buffer_capacity: int,
-                 save_replay_buffer: bool) -> None:
+                 save_replay_buffer: bool, eval_env: gym.Env = None) -> None:
         """Integrates online experience collection with PyTorch Lightning's training loop.
 
         Args:
@@ -107,6 +107,7 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
         self.sequence_length = sequence_length
         self.buffer_capacity = buffer_capacity
         self.save_replay_buffer = save_replay_buffer
+        self.eval_env = eval_env
 
         self.last_action = torch.full_like(torch.from_numpy(self.env.action_space.sample().astype(np.float32)),
                                            float('nan')).to(self.device)
@@ -207,13 +208,17 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
         if not self.done:
             raise RuntimeError("Current training episode must have terminated before playing an episode.")
 
-        self.obs, self.done, info = self.env.reset(), False, {}
+        if mode == "eval" and self.eval_env is not None:
+            env = self.eval_env
+        else:
+            env = self.env
+        self.obs, self.done, info = env.reset(), False, {}
         episode = defaultdict(list)
         episode["obs"].append(self.obs)
         while not self.done:
             self.last_action[:] = self.select_action(self.obs.to(self.device), is_first=len(episode["obs"]) == 1,
                                                   mode=mode)
-            self.obs, reward, self.done, info = self.env.step(self.last_action.cpu())
+            self.obs, reward, self.done, info = env.step(self.last_action.cpu())
             episode["obs"].append(self.obs.cpu())
             episode["reward"].append(reward)
 
