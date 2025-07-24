@@ -19,6 +19,9 @@ def make_env(suite: str, name: str, image_size: Tuple[int, int], max_episode_ste
     elif suite == 'dmcontrol':
         from envs.from_dmcontrol import make_env as make_dmcontrol_env
         env = make_dmcontrol_env(name, image_size, max_episode_steps, action_repeat, seed)
+    elif suite == 'dmcgb':
+        from envs.from_dmcgb import make_env as make_dmcgb_env
+        env = make_dmcgb_env(name, image_size, max_episode_steps, action_repeat, seed, mode)
     elif suite == 'survival':
         from envs.from_survival import make_env as make_survival_env
         from envs.wrappers.to_tensordict import ToTensorDict
