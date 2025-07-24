@@ -180,3 +180,5 @@ multi-object-fetch/
 ROMs/
 sold/scripts/
 sold/wandb/
+checkpoints/autoencoder/savi/dmcgb_finger_spin/
+checkpoints/sold/dmcgb_finger_spin/
