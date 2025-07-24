@@ -111,11 +111,11 @@ def train(cfg: DictConfig):
     savi = hydra.utils.instantiate(cfg.model)
 
     print(colored('Output dir:', 'magenta', attrs=['bold']), hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
-    if cfg.logger.log_to_wandb:
+    if cfg.logger.log_to_wandb and trainer.is_global_zero:
         import wandb
         wandb.init(project="sold", name=cfg.experiment, config=dict(cfg), sync_tensorboard=True)
     trainer.fit(savi, train_dataloader, val_dataloader, ckpt_path=os.path.abspath(cfg.checkpoint) if cfg.checkpoint else None)
-    if cfg.logger.log_to_wandb:
+    if cfg.logger.log_to_wandb and trainer.is_global_zero:
         wandb.finish()
 
 

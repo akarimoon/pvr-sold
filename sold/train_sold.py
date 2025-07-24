@@ -30,7 +30,7 @@ class SOLDModule(OnlineModule):
                  actor_entropy_loss_weight: float, actor_gradients: str, return_lambda: float, discount_factor: float,
                  critic_ema_decay: float, env: gym.Env, max_steps: int, num_seed: int, update_freq: int,
                  num_updates: int, eval_freq: int, num_eval_episodes: int, batch_size: int, buffer_capacity: int,
-                 save_replay_buffer: bool) -> None:
+                 save_replay_buffer: bool, eval_env: gym.Env = None) -> None:
 
         self.min_num_context, self.max_num_context = (num_context, num_context) if isinstance(num_context, int) else num_context
         if self.min_num_context > self.max_num_context:
@@ -38,9 +38,12 @@ class SOLDModule(OnlineModule):
         sequence_length = imagination_horizon + self.max_num_context
 
         super().__init__(env, max_steps, num_seed, update_freq, num_updates, eval_freq, num_eval_episodes, batch_size,
-                         sequence_length, buffer_capacity, save_replay_buffer)
+                         sequence_length, buffer_capacity, save_replay_buffer, eval_env)
         self.automatic_optimization = False
-        self.save_hyperparameters(logger=False, ignore=['env'])
+        if eval_env is not None:
+            self.save_hyperparameters(logger=False, ignore=['env', 'eval_env'])
+        else:
+            self.save_hyperparameters(logger=False, ignore=['env'])
 
         regression_infos = {"max_episode_steps": env.max_episode_steps,  "num_slots": autoencoder.num_slots,
                             "slot_dim": autoencoder.slot_dim}
@@ -328,16 +331,18 @@ class SOLDModule(OnlineModule):
 
 @hydra.main(config_path="../configs", config_name="train_sold", version_base=None)
 def train(cfg: DictConfig):
-    if cfg.logger.log_to_wandb:
-        import wandb
-        wandb.init(project="sold", name=cfg.experiment, config=dict(cfg), sync_tensorboard=True)
     print_summary(cfg)
     set_seed(cfg.seed)
     sold = hydra.utils.instantiate(cfg.model)
     trainer = instantiate_trainer(cfg)
+    
+    if cfg.logger.log_to_wandb and trainer.is_global_zero:
+        import wandb
+        wandb.init(project="sold", name=cfg.experiment, config=dict(cfg), sync_tensorboard=True)
+    
     trainer.fit(sold, ckpt_path=os.path.abspath(cfg.checkpoint) if cfg.checkpoint else None)
 
-    if cfg.logger.log_to_wandb:
+    if cfg.logger.log_to_wandb and trainer.is_global_zero:
         wandb.finish()
 
 
