@@ -24,6 +24,10 @@ def save_episode(path: str, cfg: DictConfig) -> None:
 
     os.mkdir(path)
     env = hydra.utils.instantiate(cfg.env)
+    if cfg.env.suite == "dmcgb":
+        # extract the episode number from the path
+        episode_number = int(path.split("/")[-1])
+        env._color_index = episode_number
     step_count, images, features, actions, rewards = 0, [], [], [], []
     obs, done = env.reset(), False
     save_image(obs)
@@ -53,6 +57,12 @@ def generate_dataset(cfg: DictConfig) -> None:
 
         paths = [os.path.join(output_dir, split, str(episode)) for episode in range(num_episodes)]
         cfgs = [cfg] * len(paths)
+
+        if cfg.env.suite == "dmcgb":
+            if "train" in split:
+                cfg.env.mode += "_train"
+            else:
+                cfg.env.mode += "_test"
 
         if cfg.num_workers > 1:
             with ProcessPoolExecutor(max_workers=cfg.num_workers) as executor:
