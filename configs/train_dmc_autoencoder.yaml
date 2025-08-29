@@ -7,13 +7,13 @@ defaults:
   - _self_
 
 checkpoint: ""
-experiment: "reacher_easy_color_easy"
+experiment: "finger_spin"
 seed: 42
 
 dataset:
   _target_: datasets.image.load_image_dataset
-  path: ../experiments/generate_dmcgb_dataset/reacher_easy_color_easy
-  data_dir: 2025-08-12_23-18-02
+  path: ../experiments/generate_dmc_dataset/finger_spin
+  data_dir: 2025-07-22_23-46-32
   num_workers: 8
   batch_size: 64
   sequence_length: 8

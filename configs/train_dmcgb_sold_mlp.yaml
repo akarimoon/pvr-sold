@@ -7,11 +7,11 @@ defaults:
   - _self_
 
 checkpoint: ""
-experiment: "acrobot_swingup_color_easy"
+experiment: "finger_spin_color_easy"
 seed: 42
 
 model:
-  _target_: train_sold.SOLDModule
+  _target_: train_sold.SOLDModuleWithMLPPolicy
 
   max_steps: 10_000_000  # Maximum number of environment steps to train for.
   num_seed: 250  # Start training after 'train_after' random steps.
@@ -26,11 +26,11 @@ model:
   dynamics_learning_rate: 0.0001
   dynamics_grad_clip: 3.0
   actor_learning_rate: 0.00003
-  actor_grad_clip: 10.0
+  actor_grad_clip: 100.0
   actor_entropy_loss_weight: 0.0003
   actor_gradients: "dynamics"  # Use "dynamics" or "reinforce" gradients for the actor.
   critic_learning_rate: 0.00003
-  critic_grad_clip: 10.0
+  critic_grad_clip: 100.0
   reward_learning_rate: 0.0001
   reward_grad_clip: 10.0
 
@@ -43,13 +43,13 @@ model:
   start_imagination_from_every: False  # Whether to start imagination from possible frame in the sequences or only a single one.
 
   return_lambda: 0.95  # Lambda used to compute bootstrapped λ-returns.
-  discount_factor: 0.96  # Discount factor used to compute returns.
+  discount_factor: 0.997  # Discount factor used to compute returns.
   critic_ema_decay: 0.98  # Exponential moving average decay for the critic target network.
 
   env:
     _target_: envs.make_env
     suite: dmcgb  # Should be "mof", "gym", or "dmcontrol".
-    name: acrobot_swingup
+    name: finger_spin
     image_size: [ 64, 64 ]
     max_episode_steps: 50
     action_repeat: 2
@@ -63,7 +63,7 @@ model:
   eval_env:
     _target_: envs.make_env
     suite: dmcgb  # Should be "mof", "gym", or "dmcontrol".
-    name: acrobot_swingup
+    name: finger_spin
     image_size: [ 64, 64 ]
     max_episode_steps: 25
     action_repeat: 2
@@ -76,7 +76,7 @@ model:
 
   autoencoder:
     _target_: train_autoencoder.load_autoencoder
-    checkpoint_path: ../checkpoints/autoencoder/savi/dmcgb_acrobot_swingup/latest_ep969.ckpt
+    checkpoint_path: ../checkpoints/autoencoder/savi/dmcgb_finger_spin/latest.ckpt
 
 #    _target_: modeling.autoencoder.cnn.autoencoder.Cnn
 #    encoder:
@@ -96,7 +96,6 @@ model:
   dynamics_predictor:
     _target_: modeling.sold.dynamics.make_ocvp_seq_dynamics_model
     _partial_: True
-    token_dim: 256
     hidden_dim: 512
     num_layers: 4
     num_heads: 8
@@ -104,26 +103,17 @@ model:
     teacher_forcing: False
 
   actor:
-    _target_: modeling.sold.prediction.GaussianPredictor
+    _target_: modeling.sold.prediction.GaussianMLPPredictor
     _partial_: True
-    token_dim: 256
-    num_heads: 8
-    num_layers: 3
     hidden_dim: 512
-    num_mlp_layers: 1
-    num_register_tokens: 4
-    selected_slot_indices: null # Use all slots
+    num_mlp_layers: 2
 
   critic:
-    _target_: modeling.sold.prediction.TwoHotPredictor
+    _target_: modeling.sold.prediction.TwoHotMLPPredictor
     _partial_: True
-    token_dim: 256
-    num_heads: 8
-    num_layers: 3
     hidden_dim: 512
-    num_mlp_layers: 1
-    num_register_tokens: 4
-    selected_slot_indices: null # Use all slots
+    output_dim: 255
+    num_mlp_layers: 2
 
   reward_predictor:
     _target_: modeling.sold.prediction.TwoHotPredictor
@@ -135,3 +125,36 @@ model:
     num_mlp_layers: 1
     num_register_tokens: 4
     selected_slot_indices: null # Use all slots
+
+  # actor:
+  #   _target_: modeling.sold.prediction.GaussianPredictor
+  #   _partial_: True
+  #   token_dim: 256
+  #   num_heads: 8
+  #   num_layers: 3
+  #   hidden_dim: 512
+  #   num_mlp_layers: 1
+  #   num_register_tokens: 4
+  #   selected_slot_indices: null  # Use only slots 0 and 2
+
+  # critic:
+  #   _target_: modeling.sold.prediction.TwoHotPredictor
+  #   _partial_: True
+  #   token_dim: 256
+  #   num_heads: 8
+  #   num_layers: 3
+  #   hidden_dim: 512
+  #   num_mlp_layers: 1
+  #   num_register_tokens: 4
+  #   selected_slot_indices: null  # Use only slots 0 and 2
+
+  # reward_predictor:
+  #   _target_: modeling.sold.prediction.TwoHotPredictor
+  #   _partial_: True
+  #   token_dim: 256
+  #   num_heads: 8
+  #   num_layers: 3
+  #   hidden_dim: 512
+  #   num_mlp_layers: 1
+  #   num_register_tokens: 4
+  #   selected_slot_indices: null # Use all slots

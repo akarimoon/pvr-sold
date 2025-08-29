@@ -1,0 +1,26 @@
+defaults:
+  - hydra: default
+  - _self_
+
+experiment: "finger_spin"
+save_format: "png"
+
+num_train: 20_000  # Number of episodes in the 'train' split.
+num_val: 2_000
+num_test: 2_000
+
+num_workers: 8
+
+env:
+  _target_: envs.make_env
+  suite: dmcontrol  # Should be "mof", "gym", or "dmcontrol".
+  name: finger_spin
+  image_size: [ 64, 64 ]
+  max_episode_steps: 25
+  action_repeat: 2
+  use_cls_token: false
+  freeze_vit: false
+  vit_cache_dir: null
+  vit_model: null
+  seed: null
+
