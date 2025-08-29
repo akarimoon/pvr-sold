@@ -78,38 +78,39 @@ def evaluate(cfg: DictConfig):
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     checkpoint_files = get_checkpoint_files(cfg.checkpoint_path)
 
-    for checkpoint in tqdm(checkpoint_files, disable=len(checkpoint_files) == 1, desc="Evaluating checkpoints"):
-        env = hydra.utils.instantiate(cfg.env)
-        sold = SOLDModule.load_from_checkpoint(checkpoint, env=env)
+    for i, checkpoint in enumerate(tqdm(checkpoint_files, disable=len(checkpoint_files) == 1, desc="Evaluating checkpoints")):
+        if i % 10 == 0:
+            env = hydra.utils.instantiate(cfg.env)
+            sold = SOLDModule.load_from_checkpoint(checkpoint, env=env)
 
-        # Log behavior videos.
-        videos_dir = os.path.join(output_dir, "videos")
-        os.makedirs(videos_dir, exist_ok=True)
-        metrics_filename = os.path.join(output_dir, "metrics.jsonl")
-        episode_returns, successes = [], []
-        for episode_index in range(cfg.eval_episodes):
-            checkpoint_filename = os.path.splitext(os.path.basename(checkpoint))[0]
-            checkpoint_videos_dir = os.path.join(videos_dir, checkpoint_filename)
-            os.makedirs(checkpoint_videos_dir, exist_ok=True)
-            episode = play_episode(sold, mode="eval")
-            write_video(os.path.join(checkpoint_videos_dir, f"episode_obs_{episode_index}.mp4"),
-                        (torch.stack(episode["obs"]).permute(0, 2, 3, 1)), fps=10)
-            write_video(os.path.join(checkpoint_videos_dir, f"episode_high_res_{episode_index}.mp4"),
-                        (torch.stack(episode["high_res"]).permute(0, 2, 3, 1) * 255).to(torch.uint8), fps=10)
-            episode_returns.append(sum(episode["reward"]))
+            # Log behavior videos.
+            videos_dir = os.path.join(output_dir, "videos")
+            os.makedirs(videos_dir, exist_ok=True)
+            metrics_filename = os.path.join(output_dir, "metrics.jsonl")
+            episode_returns, successes = [], []
+            for episode_index in range(cfg.eval_episodes):
+                checkpoint_filename = os.path.splitext(os.path.basename(checkpoint))[0]
+                checkpoint_videos_dir = os.path.join(videos_dir, checkpoint_filename)
+                os.makedirs(checkpoint_videos_dir, exist_ok=True)
+                episode = play_episode(sold, mode="eval")
+                write_video(os.path.join(checkpoint_videos_dir, f"episode_obs_{episode_index}.mp4"),
+                            (torch.stack(episode["obs"]).permute(0, 2, 3, 1)), fps=10)
+                write_video(os.path.join(checkpoint_videos_dir, f"episode_high_res_{episode_index}.mp4"),
+                            (torch.stack(episode["high_res"]).permute(0, 2, 3, 1) * 255).to(torch.uint8), fps=10)
+                episode_returns.append(sum(episode["reward"]))
 
-            dynamics_image = rollout(sold, episode)
-            save_image(dynamics_image, os.path.join(checkpoint_videos_dir, f"episode_dynamics_{episode_index}.png"))
+                dynamics_image = rollout(sold, episode)
+                save_image(dynamics_image, os.path.join(checkpoint_videos_dir, f"episode_dynamics_{episode_index}.png"))
 
-            if "success" in episode:
-                successes.append(episode["success"])
+                if "success" in episode:
+                    successes.append(episode["success"])
 
-        # Log return and success rate metrics.
-        with open(metrics_filename, mode="a") as file:
-            record = {"step": sold.num_steps, "checkpoint": checkpoint, "episode_returns": episode_returns,}
-            if len(successes) > 0:
-                record["success_rate"] = sum(successes) / len(successes)
-            file.write(json.dumps(record) + "\n")
+            # Log return and success rate metrics.
+            with open(metrics_filename, mode="a") as file:
+                record = {"step": sold.num_steps, "checkpoint": checkpoint, "episode_returns": episode_returns,}
+                if len(successes) > 0:
+                    record["success_rate"] = sum(successes) / len(successes)
+                file.write(json.dumps(record) + "\n")
 
 
 if __name__ == "__main__":
