@@ -193,6 +193,53 @@ def get_attention_weights(model: nn.Module, slots: torch.Tensor) -> torch.Tensor
     return output_weights
 
 
+def get_mlp_slot_importance(model: nn.Module, slots: torch.Tensor) -> torch.Tensor:
+    """Compute slot importance for MLP-based models using gradient-based analysis."""
+    batch_size, sequence_length, num_slots, slot_dim = slots.size()
+    
+    # Initialize tensor to store importance for each timestep
+    timestep_importances = []
+    
+    # Loop over each timestep to compute importance individually
+    for t in range(sequence_length):
+        # Extract slots for current timestep and enable gradients
+        slots_curr = slots[:, t:t+1].detach().requires_grad_(True)  # Shape: (batch, 1, num_slots, slot_dim)
+        
+        # Forward pass to get action distribution for this timestep
+        action_dist = model(slots_curr, start=0)  # start=0 since we only have 1 timestep
+        
+        # Use action distribution parameters for gradient computation
+        if hasattr(action_dist, 'base_dist'):
+            # For Independent distributions, get the base distribution
+            output_tensor = action_dist.base_dist.loc  # Mean of the Gaussian distribution
+        else:
+            output_tensor = action_dist.loc if hasattr(action_dist, 'loc') else action_dist.mean
+        
+        # Compute gradients of output w.r.t. input slots for this timestep
+        gradients = torch.autograd.grad(
+            outputs=output_tensor.sum(),  # Sum to get scalar for gradient computation
+            inputs=slots_curr,
+            create_graph=False,
+            retain_graph=False,
+            only_inputs=True
+        )[0]
+        
+        # Aggregate gradients across slot dimensions to get per-slot importance
+        # gradients shape: (batch, 1, num_slots, slot_dim)
+        slot_importance_t = torch.sum(torch.abs(gradients), dim=-1)  # Sum over slot dimensions
+        
+        # Normalize importance scores for this timestep individually
+        slot_importance_t_norm = slot_importance_t[0, 0] / (slot_importance_t[0, 0].max() + 1e-8)
+        
+        # Store normalized importance for this timestep
+        timestep_importances.append(slot_importance_t_norm)  # Shape: (num_slots,)
+    
+    # Stack all timestep importances
+    slot_importance = torch.stack(timestep_importances, dim=0)  # Shape: (sequence_length, num_slots)
+    
+    return slot_importance
+
+
 def get_output_attention_images(attention_weights, rgbs, masks):
     import matplotlib as mpl
     cmap = mpl.colormaps['plasma']

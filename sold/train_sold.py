@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 from utils.instantiate import instantiate_trainer
 from utils.module import FreezeParameters
 from utils.training import set_seed, print_summary, OnlineModule
-from utils.visualizations import  visualize_reward_prediction, visualize_output_attention, visualize_reward_predictor_attention, get_attention_weights
+from utils.visualizations import  visualize_reward_prediction, visualize_output_attention, visualize_reward_predictor_attention, get_attention_weights, get_mlp_slot_importance
 
 
 class SOLDModule(OnlineModule):
@@ -319,6 +319,110 @@ class SOLDModule(OnlineModule):
             selected_action = torch.from_numpy(self.env.action_space.sample().astype(np.float32))
         else:
             action_dist = self.actor(self._slot_history, start=self._slot_history.shape[1] - 1)
+            if mode == "train":
+                selected_action = action_dist.sample().squeeze()
+            elif mode == "eval":
+                selected_action = action_dist.mode.squeeze()
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
+
+        return selected_action.clamp_(self.env.action_space.low[0], self.env.action_space.high[0]).detach()
+
+
+class SOLDModuleWithMLPPolicy(SOLDModule):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        return [torch.optim.Adam(self.dynamics_predictor.parameters(), lr=self.dynamics_learning_rate),
+                torch.optim.Adam(self.reward_predictor.parameters(), lr=self.reward_learning_rate),
+                torch.optim.Adam(self.actor.parameters(), lr=self.actor_learning_rate, eps=1e-5),
+                torch.optim.Adam(self.critic.parameters(), lr=self.critic_learning_rate, eps=1e-5)]
+    
+    def imagine_ahead(self, slots: torch.Tensor, actions: torch.Tensor) -> List[torch.Tensor]:
+        self.dynamics_predictor.eval()
+        batch_size, sequence_length, num_slots, slot_dim = slots.size()
+        action_log_probs, action_entropies = [], []
+
+        if self.start_imagination_from_every:
+            num_context = self.max_num_context
+            slots_context = slots.unfold(dimension=1, size=self.max_num_context, step=1).flatten(end_dim=1).permute(0, 3, 1, 2)
+            actions_context = actions.unfold(dimension=1, size=self.max_num_context, step=1).flatten(end_dim=1).permute(0, 2, 1)[:, 1:]
+        else:
+            num_context = torch.randint(self.min_num_context, self.max_num_context + 1, (1,)).item()
+            slots_context = slots[:, :num_context].detach()
+            actions_context = actions[:, 1:num_context].detach()
+        
+        # Actor update
+        # Freeze models except action model and imagine next states
+        with FreezeParameters([self.reward_predictor, self.critic]):
+            for t in range(self.imagination_horizon):
+                # actor only use the last slot to predict the action
+                slots_curr = slots_context[:, -1:]
+                actions_curr = actions_context[:, -1:]
+
+                action_dist = self.actor(slots_curr.detach(), start=slots_curr.shape[1] - 1)
+                selected_action = action_dist.rsample().squeeze(1)
+                actions_context = torch.cat([actions_context, selected_action.unsqueeze(1)], dim=1)
+                action_log_probs.append(action_dist.log_prob(selected_action.unsqueeze(1)))
+                action_entropies.append(action_dist.entropy())
+
+                predicted_slots = self.dynamics_predictor.predict_slots(slots_context, actions_context, steps=1, num_context=slots_context.shape[1])
+                slots_context = torch.cat([slots_context, predicted_slots], dim=1)
+                
+        with FreezeParameters([self.reward_predictor, self.critic]):
+            predicted_rewards = self.reward_predictor(slots_context, start=num_context).mean.squeeze()
+            predicted_values = self.critic(slots_context, start=num_context).mean.squeeze()
+        
+        lambda_returns = self.compute_lambda_returns(predicted_rewards, predicted_values)
+
+        action_log_probs = torch.stack(action_log_probs, dim=1).squeeze(2)
+        action_entropies = torch.stack(action_entropies, dim=1)
+
+        # Value update
+        slots_context = slots_context.detach()
+        # Predict imagined values
+        predicted_values_targ = self.critic_target(slots_context[:, :-1], start=num_context - 1).mean.squeeze()
+        predicted_values_dist = self.critic(slots_context[:, :-1], start=num_context - 1)
+
+        if self.after_eval:
+            with torch.no_grad():
+                # Log visualization of a latent imagination sequence.
+                outputs = self.autoencoder.decode(slots_context[0:1])
+                x_ticks = [''] * num_context
+                x_ticks.append(f'rew={predicted_rewards[0, 0].item():.2f}')
+                for t in range(1, self.imagination_horizon):
+                    x_ticks.append(f'{predicted_rewards[0, t].item():.2f}')
+                outputs["xticks"] = np.array([x_ticks, ])
+                context_image = self.autoencoder.visualize_reconstruction(
+                    {k: v[0, :num_context] for k, v in outputs.items()})
+                future_image = self.autoencoder.visualize_reconstruction(
+                    {k: v[0, num_context:] for k, v in outputs.items()})
+                latent_imagination_image = torch.cat(
+                    [context_image, torch.ones(3, context_image.size(1), 2), future_image], dim=2)
+                self.log("latent_imagination", latent_imagination_image)
+
+            # Log visualization of actor slot importance.
+            if "masks" in outputs:
+                output_weights = get_mlp_slot_importance(self.actor, slots_context[:1, :num_context + self.imagination_horizon])
+                actor_attention_image = visualize_output_attention(output_weights, outputs["reconstructions"][0], outputs["rgbs"][0], outputs["masks"][0])
+                self.log("actor_attention", actor_attention_image)
+        return lambda_returns, predicted_values_targ, predicted_values_dist, action_log_probs, action_entropies
+        
+    def select_action(self, observation: torch.Tensor, is_first: bool = False, mode: str = "train") -> torch.Tensor:
+        observation = observation.unsqueeze(0) / 255.  # Expand batch dimension (1, 3, height, width).
+
+        # Encode image into slots and append to context.
+        last_slots = None if is_first else self._slot_history[:, -1]
+        slots = self.autoencoder.encode(observation.unsqueeze(1), self.last_action.unsqueeze(0).unsqueeze(1),
+                                        prior_slots=last_slots)  # Expand sequence (and batch) dimension.
+        self._slot_history = slots if is_first else torch.cat([self._slot_history, slots], dim=1)
+
+        if mode == "random":
+            selected_action = torch.from_numpy(self.env.action_space.sample().astype(np.float32))
+        else:
+            slots_curr = self._slot_history[:, -1:]
+            action_dist = self.actor(slots_curr.detach(), start=slots_curr.shape[1] - 1)
             if mode == "train":
                 selected_action = action_dist.sample().squeeze()
             elif mode == "eval":
