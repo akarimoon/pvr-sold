@@ -4,9 +4,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
 
+from modeling.autoencoder.cnn.utils import ImgChLayerNorm
+
 
 class CnnEncoder(nn.Module):
-    def __init__(self, num_channels: List[int], kernel_sizes: List[int], strides: List[int], in_channels: int = 3
+    def __init__(self, num_channels: List[int], kernel_sizes: List[int], strides: List[int], 
+                 in_channels: int = 3, act = "relu", norm = False
                  ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -14,10 +17,19 @@ class CnnEncoder(nn.Module):
             raise ValueError(f"Expected num_channels, kernel_sizes, and strides to have the same length, but got "
                              f"{len(num_channels)}, {len(kernel_sizes)}, {len(strides)}.")
 
+        if act == "relu":
+            act_fn = nn.ReLU(inplace=False)
+        elif act == "silu":
+            act_fn = nn.SiLU(inplace=False)
+        else:
+            raise ValueError(f"Expected act to be 'relu' or 'silu', but got {act}.")
+
         layers = []
         for layer_num, (out_channels, kernel_size, stride) in enumerate(zip(num_channels, kernel_sizes, strides)):
             layers.append(SamePadConv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride))
-            layers.append(nn.ReLU(inplace=False) if layer_num < len(num_channels) - 1 else nn.Identity())
+            if norm:
+                layers.append(ImgChLayerNorm(out_channels))
+            layers.append(act_fn if layer_num < len(num_channels) - 1 else nn.Identity())
             in_channels = out_channels
         self.encoder = nn.Sequential(*layers)
 

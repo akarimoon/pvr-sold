@@ -1,0 +1,126 @@
+# @package _global_
+defaults:
+  - callbacks: sold
+  - hydra: default
+  - logger: wandb
+  - trainer: online
+  - _self_
+
+checkpoint: ""
+experiment: "finger_spin_color_easy"
+seed: 42
+
+model:
+  _target_: train_dreamer.DreamerModule
+
+  max_steps: 10_000_000  # Maximum number of environment steps to train for.
+  num_seed: 2500  # Start training after 'train_after' random steps.
+  pretrain: 1000 # Number of updates to perform during pretraining.
+  update_freq: 2  # Update the models every 'update_freq' steps.
+  num_updates: 1  # Number of updates to perform whenever the models are updated.
+  eval_freq: 1500  # Evaluate the models every 'eval_freq' steps.
+  num_eval_episodes: 5  # Number of episodes to collect during evaluation.
+  batch_size: 16  # Batch size for training.
+  sequence_length: 64  # Sequence length for training.
+  buffer_capacity: 1000000  # Maximum number of time-steps to store in the replay buffer.
+  save_replay_buffer: True  # Whether to save the full replay buffer for the latest checkpoint to enable resuming of training.
+
+  world_model_learning_rate: 0.0001
+  world_model_eps: 1e-8
+  world_model_grad_clip: 1000.0
+  actor_learning_rate: 0.00003
+  actor_eps: 0.00001
+  actor_grad_clip: 100.0
+  actor_entropy_scale: 0.0003
+  actor_gradients: "dynamics"
+  critic_learning_rate: 0.00003
+  critic_eps: 0.00001
+  critic_grad_clip: 100.0
+
+  imagination_horizon: 15  # Number of frames to predict in imagination.
+  return_lambda: 0.95  # Lambda used to compute bootstrapped λ-returns.
+  discount_factor: 0.997  # Discount factor used to compute returns.
+  critic_ema_decay: 0.98  # Exponential moving average decay for the critic target network.
+
+  rep_scale: 0.1
+  dyn_scale: 0.5
+  free_nats: 1.0
+
+  env:
+    _target_: envs.make_env
+    suite: dmcgb
+    name: finger_spin
+    image_size: [64, 64]
+    max_episode_steps: 1000
+    action_repeat: 2
+    mode: color_easy_train
+    use_cls_token: false
+    freeze_vit: false
+    vit_cache_dir: null
+    vit_model: null
+    seed: null
+
+  eval_env:
+    _target_: envs.make_env
+    suite: dmcgb
+    name: finger_spin
+    image_size: [64, 64]
+    max_episode_steps: 1000
+    action_repeat: 2
+    mode: color_easy_test
+    use_cls_token: false
+    freeze_vit: false
+    vit_cache_dir: null
+    vit_model: null
+    seed: null
+
+  # Components
+  encoder:
+    _target_: modeling.dreamer.autoencoder.DreamerEncoder
+    num_channels: [32, 64, 128, 256]
+    kernel_sizes: [4, 4, 4, 4]
+    strides: [2, 2, 2, 2]
+    in_channels: 3
+
+  rssm:
+    _target_: modeling.dreamer.dynamics.RSSM
+    _partial_: True
+    stoch_dim: 32
+    deter_dim: 512
+    hidden_dim: 512
+    obs_embed_dim: 4096
+    discrete: 32
+    unimix: 0.0
+    initial: "learned"
+
+  decoder:
+    _target_: modeling.dreamer.autoencoder.DreamerDecoder
+    _partial_: True
+    image_size: ${...model.env.image_size}
+    num_channels: [256, 128, 64, 32]
+    kernel_sizes: [4, 4, 4, 4]
+    strides: [2, 2, 2, 2]
+
+  reward_predictor:
+    _target_: modeling.dreamer.prediction.TwoHotPredictor
+    _partial_: True
+    hidden_dim: 512
+    num_layers: 2
+    output_dim: 255
+    norm: true
+
+  actor:
+    _target_: modeling.dreamer.prediction.GaussianPredictor
+    _partial_: true
+    hidden_dim: 512
+    num_layers: 2
+    output_dim: 2
+    norm: true
+
+  critic:
+    _target_: modeling.dreamer.prediction.TwoHotPredictor
+    _partial_: true
+    hidden_dim: 512
+    num_layers: 2
+    output_dim: 255
+    norm: true

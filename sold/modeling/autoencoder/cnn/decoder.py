@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from typing import List, Tuple
 
+from modeling.autoencoder.cnn.utils import ImgChLayerNorm
 
 class Decoder(nn.Module, ABC):
     def __init__(self, image_size: Tuple[int, int], out_channels: int) -> None:
@@ -18,12 +19,20 @@ class Decoder(nn.Module, ABC):
 
 class CnnDecoder(Decoder):
     def __init__(self, embedding_dim: int, image_size: Tuple[int, int], num_channels: List[int],
-                 kernel_sizes: List[int], strides: List[int]) -> None:
+                 kernel_sizes: List[int], strides: List[int], act = "relu", norm = False) -> None:
         super().__init__(image_size, 3)
         assert len(num_channels) == len(kernel_sizes) == len(strides), \
             "num_channels, kernel_sizes, and strides must have the same length"
         self.image_size = image_size
         self.feature_map_size = torch.LongTensor(image_size)
+
+        if act == "relu":
+            act_fn = nn.ReLU(inplace=False)
+        elif act == "silu":
+            act_fn = nn.SiLU(inplace=False)
+        else:
+            raise ValueError(f"Expected act to be 'relu' or 'silu', but got {act}.")
+
         for stride in strides:
             self.feature_map_size //= stride
 
@@ -38,8 +47,10 @@ class CnnDecoder(Decoder):
                 in_channels, out_channels, kernel_size=kernel, stride=stride,
                 padding=padding, output_padding=output_padding
             ))
+            if norm:
+                layers.append(ImgChLayerNorm(out_channels))
             is_last = i == len(num_channels) - 1
-            layers.append(nn.Sigmoid() if is_last else nn.ReLU(inplace=False))
+            layers.append(nn.Sigmoid() if is_last else act_fn)
             in_channels = out_channels
 
         self.decoder = nn.Sequential(*layers)
