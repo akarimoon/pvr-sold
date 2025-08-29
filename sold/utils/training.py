@@ -80,7 +80,7 @@ class OnlineProgressBar(RichProgressBar):
 class OnlineModule(LoggingStepMixin, LightningModule, ABC):
     def __init__(self, env: gym.Env, max_steps: int, num_seed: int, update_freq: int, num_updates: int,
                  eval_freq: int, num_eval_episodes: int, batch_size: int, sequence_length: int, buffer_capacity: int,
-                 save_replay_buffer: bool, eval_env: gym.Env = None) -> None:
+                 save_replay_buffer: bool, eval_env: gym.Env = None, pretrain: int = 0) -> None:
         """Integrates online experience collection with PyTorch Lightning's training loop.
 
         Args:
@@ -108,6 +108,7 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
         self.buffer_capacity = buffer_capacity
         self.save_replay_buffer = save_replay_buffer
         self.eval_env = eval_env
+        self.pretrain_updates_remaining = pretrain
 
         self.last_action = torch.full_like(torch.from_numpy(self.env.action_space.sample().astype(np.float32)),
                                            float('nan')).to(self.device)
@@ -134,7 +135,10 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
         if not hasattr(self, "replay_buffer"):
             self.replay_buffer = RingBufferDataset(self.buffer_capacity, self.batch_size, self.sequence_length,
                                                   save_path=self.logger.log_dir + "/replay_buffer")
-        dataset = NumUpdatesWrapper(self.replay_buffer, self.num_updates)
+        effective_updates = self.num_updates
+        if self.num_steps == 0 and self.pretrain_updates_remaining > 0:
+            effective_updates = self.pretrain_updates_remaining
+        dataset = NumUpdatesWrapper(self.replay_buffer, effective_updates)
         dataloader = DataLoader(dataset, batch_size=1, pin_memory=True, num_workers=1)
         return dataloader
 
@@ -232,6 +236,8 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
     def on_train_epoch_end(self) -> None:
         if self.num_steps >= self.max_steps:
             self.trainer.should_stop = True
+        if self.num_steps == 0 and self.pretrain_updates_remaining > 0:
+            self.pretrain_updates_remaining = 0
 
     @property
     def logging_step(self) -> int:
