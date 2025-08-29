@@ -59,9 +59,11 @@ def generate_dataset(cfg: DictConfig) -> None:
         cfgs = [cfg] * len(paths)
 
         if cfg.env.suite == "dmcgb":
-            if "train" in split:
+            if "train" in split or "val" in split:
+                cfg.env.mode = cfg.env.mode.replace("_train", "")
                 cfg.env.mode += "_train"
             else:
+                cfg.env.mode = cfg.env.mode.replace("_train", "")
                 cfg.env.mode += "_test"
 
         if cfg.num_workers > 1:
