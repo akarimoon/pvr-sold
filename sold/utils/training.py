@@ -136,7 +136,7 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
             self.replay_buffer = RingBufferDataset(self.buffer_capacity, self.batch_size, self.sequence_length,
                                                   save_path=self.logger.log_dir + "/replay_buffer")
         effective_updates = self.num_updates
-        if self.num_steps == 0 and self.pretrain_updates_remaining > 0:
+        if self.pretrain_updates_remaining > 0 and self.num_steps >= self.num_seed:
             effective_updates = self.pretrain_updates_remaining
         dataset = NumUpdatesWrapper(self.replay_buffer, effective_updates)
         dataloader = DataLoader(dataset, batch_size=1, pin_memory=True, num_workers=1)
@@ -236,7 +236,7 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
     def on_train_epoch_end(self) -> None:
         if self.num_steps >= self.max_steps:
             self.trainer.should_stop = True
-        if self.num_steps == 0 and self.pretrain_updates_remaining > 0:
+        if self.pretrain_updates_remaining > 0 and self.num_steps >= self.num_seed:
             self.pretrain_updates_remaining = 0
 
     @property
