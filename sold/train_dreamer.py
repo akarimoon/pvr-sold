@@ -82,7 +82,7 @@ class DreamerModule(OnlineModule):
         self.rssm = rssm(action_dim=env.action_space.shape[0])
         self.decoder = decoder(embedding_dim=self.rssm.feature_dim)
         self.reward_predictor = reward_predictor(input_dim=self.rssm.feature_dim)
-        self.actor = actor(input_dim=self.rssm.feature_dim)
+        self.actor = actor(input_dim=self.rssm.feature_dim, output_dim=env.action_space.shape[0])
         self.critic = critic(input_dim=self.rssm.feature_dim)
         self.critic_target = copy.deepcopy(self.critic)
 
