@@ -1,0 +1,6 @@
+learning_rate:
+  _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  logging_interval: 'step'
+
+progress_bar:
+  _target_: lightning.pytorch.callbacks.RichProgressBar

@@ -1,0 +1,74 @@
+# @package _global_
+defaults:
+  - callbacks: bc
+  - hydra: default
+  - logger: wandb
+  - _self_
+
+# Path to a SOLD checkpoint (.ckpt) that contains replay buffer metadata
+ckpt_path: "../experiments/train_dmcgb_dreamer/finger_spin_color_easy/2025-09-08_12-58-38/logs/version_0/replay_buffer"
+
+experiment: "finger_spin_bc"
+seed: 42
+
+# Data loading and BC training hyperparameters
+batch_size: 256
+sequence_length: 18 # context(3) + horizon(15) from SOLD
+num_workers: 1
+dataset_fraction: 0.1
+
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 1500  # Maximum number of training epochs.
+  check_val_every_n_epoch: 10  # Run validation every n epochs.
+  accelerator: "auto"
+
+model:
+  _target_: train_bc.BCModule
+
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  context: 3
+
+  env:
+    _target_: envs.make_env
+    suite: dmcgb
+    name: finger_spin
+    image_size: [ 64, 64 ]
+    max_episode_steps: 50
+    action_repeat: 2
+    mode: color_easy_train
+    use_cls_token: false
+    freeze_vit: false
+    vit_cache_dir: null
+    vit_model: null
+    seed: null
+
+  eval_env: 
+    _target_: envs.make_env
+    suite: dmcgb
+    name: finger_spin
+    image_size: [ 64, 64 ]
+    max_episode_steps: 25
+    action_repeat: 2
+    mode: color_easy_test
+    use_cls_token: false
+    freeze_vit: false
+    vit_cache_dir: null
+    vit_model: null
+    seed: null
+
+  autoencoder: 
+    _target_: train_autoencoder.load_autoencoder
+    checkpoint_path: ../checkpoints/autoencoder/savi/dmcgb_finger_spin/latest.ckpt
+
+  policy:
+    _target_: modeling.sold.prediction.GaussianPredictor
+    _partial_: True
+    token_dim: 256
+    num_heads: 8
+    num_layers: 3
+    hidden_dim: 512
+    num_mlp_layers: 1
+    num_register_tokens: 4
+    selected_slot_indices: null
