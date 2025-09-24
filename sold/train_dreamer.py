@@ -295,13 +295,6 @@ class DreamerModule(OnlineModule):
             predicted_rewards = self.reward_predictor(imagined_features).mean.squeeze(-1)
             predicted_values = self.critic(imagined_features).mean.squeeze(-1)
 
-            # Visualization: latent imagination (decode imagined rollout)
-            if self.after_eval:
-                with torch.no_grad():
-                    recon_imag = self.decoder(imagined_features.detach())  # (B,H,3,H,W)
-                    image_imag = make_row(recon_imag[0].detach().cpu())
-                    self.log("latent_imagination", image_imag)
-
         lambda_returns = self.compute_lambda_returns(predicted_rewards, predicted_values)
 
         action_log_probs = torch.stack(action_log_probs, dim=1)
@@ -310,6 +303,20 @@ class DreamerModule(OnlineModule):
         # Target and current critic distributions
         predicted_values_targ = self.critic_target(imagined_features.detach()).mean.squeeze(-1)
         predicted_values_dist = self.critic(imagined_features.detach())
+
+        if self.after_eval:
+            with torch.no_grad():
+                actions = torch.stack(actions_seq, dim=1)
+                self.log("train/predicted_actions_mean", actions.mean().item())
+                self.log("train/predicted_actions_std", actions.std().item())
+                self.log("train/predicted_rewards_mean", predicted_rewards.mean().item())
+                self.log("train/predicted_rewards_std", predicted_rewards.std().item())
+                self.log("train/action_entropy", action_entropies.mean().item())
+
+                recon_imag = self.decoder(imagined_features.detach())  # (B,H,3,H,W)
+                image_imag = make_row(recon_imag[0].detach().cpu())
+                self.log("latent_imagination", image_imag)
+
         return lambda_returns, predicted_values_targ, predicted_values_dist, action_log_probs, action_entropies
 
     def compute_actor_loss(self, lambda_returns: torch.Tensor, predicted_values_targ: torch.Tensor,
@@ -358,6 +365,7 @@ class DreamerModule(OnlineModule):
         if is_first or self._rssm_state is None:
             self._rssm_state = self.rssm.init_state(batch_size=1, device=observation.device)
             self.last_action = torch.zeros(action_dim, dtype=torch.float32, device=observation.device)
+            self._feat_history = None
 
         if mode == "random":
             selected_action = torch.from_numpy(self.env.action_space.sample().astype(np.float32))
@@ -374,6 +382,7 @@ class DreamerModule(OnlineModule):
             # Actor over current belief features
             state = {"stoch": posterior["stoch"], "deter": posterior["deter"]}
             feats = self.rssm.get_feat(state)  # (1,1,E)
+            self._feat_history = feats if self._feat_history is None else torch.cat([self._feat_history, feats], dim=1)
             action_dist = self.actor(feats)
             if mode == "train":
                 selected_action = action_dist.sample().view(-1)

@@ -1,23 +1,23 @@
+import os, random, shutil, warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from datasets.ring_buffer import RingBufferDataset
-from datasets.utils import NumUpdatesWrapper
+from pathlib import Path
+from termcolor import colored
+from typing import Any, Dict, Optional, Union
 import gym
 import hydra
+import matplotlib as mpl
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
 from lightning import LightningModule
 from lightning.pytorch.callbacks.progress.rich_progress import RichProgressBar
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-import numpy as np
-import os
-from pathlib import Path
-import random
-from termcolor import colored
-import shutil
-import torch
-from torch.utils.data import DataLoader
-from typing import Any, Dict, Optional, Union
+
 from utils.logging import LoggingStepMixin
-import warnings
+from utils.visualizations import make_grid
+from datasets.ring_buffer import RingBufferDataset
+from datasets.utils import NumUpdatesWrapper
 
 warnings.filterwarnings("ignore", ".*Consider increasing the value of the `num_workers` argument*")
 
@@ -166,6 +166,9 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
             self.replay_buffer.add_step(self._complete_first_timestep({"obs": self.obs}))
             self.log("train/num_episodes", self.num_episodes)
             self.log("train/num_steps", self.num_steps)
+            if self.replay_buffer.last_episode_action_mean is not None:
+                self.log("train/last_episode_action_mean", self.replay_buffer.last_episode_action_mean.mean().item())
+                self.log("train/last_episode_action_std", self.replay_buffer.last_episode_action_std.mean().item())
 
         # Select action, perform environment step, and store resulting experience.
         mode = "train" if self.num_steps >= self.num_seed else "random"
@@ -184,13 +187,75 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
 
     @torch.no_grad()
     def eval_loop(self) -> None:
-        episode_returns, successes = [], []
+        episode_returns, episode_actions, successes = [], [], []
         for episode_index in range(self.num_eval_episodes):
             episode = self.play_episode(mode="eval")
             self.log(f"eval/episode_{episode_index}", torch.stack(episode["obs"]))
             episode_returns.append(sum(episode["reward"]))
+            if "action" in episode and len(episode["action"]) > 0:
+                episode_actions.append(torch.stack(episode["action"]))
             if "success" in episode:
                 successes.append(episode["success"])
+
+            # Slot history heatmap: mean absolute diff over slots, per-dim over time
+            if hasattr(self, "_slot_history") and self._slot_history is not None and self._slot_history.numel() > 0:
+                slot_hist = self._slot_history.detach().cpu()  # [B, T, N, D]
+                if slot_hist.dim() == 4 and slot_hist.size(1) > 1:
+                    slot_diff = (slot_hist[:, 1:] - slot_hist[:, :-1]).abs()  # [B, T-1, N, D]
+                    # per-dim over time heatmap: mean over batch and slots -> [T-1, D]
+                    mean_slot_diff = slot_diff.mean(dim=0) # [T-1, N, D]
+                    mean_slot_diff -= mean_slot_diff.amin(dim=2, keepdim=True)
+                    mean_slot_diff /= mean_slot_diff.amax(dim=2, keepdim=True)
+
+                    cmap = mpl.colormaps['plasma']
+                    heat = torch.from_numpy(cmap(mean_slot_diff.cpu().numpy())).float()
+                    heat = heat.permute(1, 3, 0, 2)[:, 0:3] # [N, 3, T-1, D]
+
+                    heat_img = make_grid(heat, num_columns=mean_slot_diff.size(0))
+                    self.log(f"eval_slot_change_heatmap_{episode_index}", heat_img)
+
+                # per-slot mean diff (mean over time and dims)
+                if 'slot_diff' in locals():
+                    per_slot_mean_diff = slot_diff.mean(dim=(0, 1, 3))  # [N]
+                    for i, v in enumerate(per_slot_mean_diff):
+                        self.log(f"eval/slot_mean_diff_{episode_index}_{i}", float(v.item()))
+
+            # Feature history mean diff
+            if hasattr(self, "_feat_history") and self._feat_history is not None and self._feat_history.numel() > 0:
+                feat_hist = self._feat_history.detach().cpu()  # [B, T, F]
+                if feat_hist.dim() == 3 and feat_hist.size(1) > 1:
+                    feat_diff = (feat_hist[:, 1:] - feat_hist[:, :-1]).abs()  # [B, T-1, F]
+                    # per-dim over time heatmap: mean over batch and slots -> [T-1, F]
+                    mean_feat_diff = feat_diff.mean(dim=0) # [T-1, F]
+                    mean_feat_diff -= mean_feat_diff.amin(dim=1, keepdim=True)
+                    mean_feat_diff /= mean_feat_diff.amax(dim=1, keepdim=True)
+
+                    cmap = mpl.colormaps['plasma']
+                    heat = torch.from_numpy(cmap(mean_feat_diff.cpu().numpy())).float()
+                    heat = heat.unsqueeze(0).permute(0, 3, 1, 2)[:, 0:3] # [1, 3, T-1, F]
+
+                    heat_img = make_grid(heat, num_columns=1)
+                    self.log(f"eval_feat_change_heatmap_{episode_index}", heat_img)
+
+                if 'feat_diff' in locals():
+                    per_feat_mean_diff = feat_diff.mean()
+                    self.log(f"eval/feat_mean_diff_{episode_index}", float(per_feat_mean_diff.item()))
+
+        # Mean of per-timestep std across eval episodes (robust to variable lengths, no torch.nanstd)
+        if len(episode_actions) > 0:
+            max_T = max(t.size(0) for t in episode_actions)
+            per_timestep_std_vals = []
+            for t in range(max_T):
+                # collect action vectors at time t from all episodes that have length > t
+                vals_t = [acts[t] for acts in episode_actions if acts.size(0) > t]
+                if len(vals_t) == 0:
+                    continue
+                vals_t = torch.stack(vals_t, dim=0)  # [N, A]
+                std_t = vals_t.std(dim=0, unbiased=False)  # [A]
+                per_timestep_std_vals.append(std_t.mean())
+            if len(per_timestep_std_vals) > 0:
+                self.log("eval/episode_actions_std", torch.stack(per_timestep_std_vals).mean())
+
         self.log("eval/episode_return", np.mean(episode_returns), prog_bar=True)
         if successes:
             self.log("eval/success_rate", np.mean(successes))
@@ -224,6 +289,7 @@ class OnlineModule(LoggingStepMixin, LightningModule, ABC):
                                                   mode=mode)
             self.obs, reward, self.done, info = env.step(self.last_action.cpu())
             episode["obs"].append(self.obs.cpu())
+            episode["action"].append(self.last_action.cpu())
             episode["reward"].append(reward)
 
         if "success" in info:

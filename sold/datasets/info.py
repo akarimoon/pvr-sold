@@ -130,12 +130,23 @@ class EpisodeDatasetInfoMixin:
     def __init__(self, info: EpisodeDatasetInfo) -> None:
         self.info = info
         self.last_episode_return = None
+        # Statistics for action logging
+        self.last_episode_action_mean = None
+        self.last_episode_action_std = None
 
     def _update_stats_on_store(self, episode: Dict[str, List]) -> None:
         self.info.num_episodes += 1
         self.info.num_timesteps += len(next(iter(episode.values())))
         self.info.episode_lengths.append(len(next(iter(episode.values()))))
         self.last_episode_return = sum(episode['reward'][1:])
+
+        if len(episode["action"]) > 0:
+            actions = torch.stack([
+                v if isinstance(v, torch.Tensor) else torch.tensor(v)
+                for v in episode["action"][1:]
+            ])  # [T, A]
+            self.last_episode_action_mean = torch.mean(actions, dim=0).cpu()
+            self.last_episode_action_std = torch.std(actions, dim=0).cpu()
 
     def _update_stats_on_remove(self) -> None:
         self.info.num_episodes -= 1

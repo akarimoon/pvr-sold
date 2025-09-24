@@ -1,19 +1,19 @@
-import os
+import copy, os
 os.environ["HYDRA_FULL_ERROR"] = "1"
 from collections import defaultdict
-import copy
-import gym
+from typing import Any, Dict, List, Tuple
 import hydra
-from lightning.pytorch.utilities.types import OptimizerLRScheduler, STEP_OUTPUT
-from modeling.distributions import Moments
-from modeling.autoencoder.base import Autoencoder
-import numpy as np
+import gym
 from omegaconf import DictConfig
+from lightning.pytorch.utilities.types import OptimizerLRScheduler, STEP_OUTPUT
+import numpy as np
 import torch
 import torch.distributions as D
 import torch.nn.functional as F
+
+from modeling.distributions import Moments
+from modeling.autoencoder.base import Autoencoder
 from train_autoencoder import AutoencoderModule
-from typing import Any, Dict, List, Tuple
 from utils.instantiate import instantiate_trainer
 from utils.module import FreezeParameters
 from utils.training import set_seed, print_summary, OnlineModule
@@ -30,7 +30,7 @@ class SOLDModule(OnlineModule):
                  actor_entropy_loss_weight: float, actor_gradients: str, return_lambda: float, discount_factor: float,
                  critic_ema_decay: float, env: gym.Env, max_steps: int, num_seed: int, update_freq: int,
                  num_updates: int, eval_freq: int, num_eval_episodes: int, batch_size: int, buffer_capacity: int,
-                 save_replay_buffer: bool, eval_env: gym.Env = None) -> None:
+                 save_replay_buffer: bool, eval_env: gym.Env = None, pretrain: int = 0) -> None:
 
         self.min_num_context, self.max_num_context = (num_context, num_context) if isinstance(num_context, int) else num_context
         if self.min_num_context > self.max_num_context:
@@ -38,7 +38,7 @@ class SOLDModule(OnlineModule):
         sequence_length = imagination_horizon + self.max_num_context
 
         super().__init__(env, max_steps, num_seed, update_freq, num_updates, eval_freq, num_eval_episodes, batch_size,
-                         sequence_length, buffer_capacity, save_replay_buffer, eval_env)
+                         sequence_length, buffer_capacity, save_replay_buffer, eval_env, pretrain)
         self.automatic_optimization = False
         if eval_env is not None:
             self.save_hyperparameters(logger=False, ignore=['env', 'eval_env'])
@@ -248,6 +248,14 @@ class SOLDModule(OnlineModule):
 
         if self.after_eval:
             with torch.no_grad():
+                # Log metrics
+                predicted_actions = actions_context[:, num_context:]
+                self.log("train/predicted_actions_mean", predicted_actions.mean().item())
+                self.log("train/predicted_actions_std", predicted_actions.std().item())
+                self.log("train/predicted_rewards_mean", predicted_rewards.mean().item())
+                self.log("train/predicted_rewards_std", predicted_rewards.std().item())
+                self.log("train/action_entropy", action_entropies.mean().item())
+
                 # Log visualization of a latent imagination sequence.
                 outputs = self.autoencoder.decode(slots_context[0:1])
                 x_ticks = [''] * num_context
@@ -318,7 +326,8 @@ class SOLDModule(OnlineModule):
         if mode == "random":
             selected_action = torch.from_numpy(self.env.action_space.sample().astype(np.float32))
         else:
-            action_dist = self.actor(self._slot_history, start=self._slot_history.shape[1] - 1)
+            action_dist, features = self.actor(self._slot_history, start=self._slot_history.shape[1] - 1, return_feats=True)
+            self._feat_history = features if is_first else torch.cat([self._feat_history, features], dim=1)
             if mode == "train":
                 selected_action = action_dist.sample().squeeze()
             elif mode == "eval":
@@ -339,6 +348,32 @@ class SOLDModuleWithMLPPolicy(SOLDModule):
                 torch.optim.Adam(self.actor.parameters(), lr=self.actor_learning_rate, eps=1e-5),
                 torch.optim.Adam(self.critic.parameters(), lr=self.critic_learning_rate, eps=1e-5)]
     
+    def compute_reward_loss(self, images: torch.Tensor, reconstructions: torch.Tensor, slots: torch.Tensor, rewards: torch.Tensor) -> Dict[str, Any]:
+        is_firsts = torch.isnan(rewards)  # We add NaN as a reward on the first time-step.
+        predicted_rewards_dist = self.reward_predictor(slots.detach())
+        log_probs = predicted_rewards_dist.log_prob(torch.nan_to_num(rewards).unsqueeze(2))
+        masked_log_probs = log_probs[~is_firsts]
+
+        # Log visualizations related to reward prediction.
+        if self.after_eval:
+            with torch.no_grad():
+                # Log prediction vs ground truth reward over the sequence.
+                reward_image = visualize_reward_prediction(
+                    images[0], reconstructions[0], rewards[0],
+                    predicted_rewards_dist.mean.squeeze(2)[0])
+                self.log("reward_prediction", reward_image)
+
+                # Log visualization of reward predictor attention to inspect reward-predictive elements.
+                outputs = self.autoencoder.decode(slots[0:1])
+            if "masks" in outputs:
+                # output_weights = get_attention_weights(self.reward_predictor, slots[0:1, ])
+                output_weights = get_mlp_slot_importance(self.reward_predictor, slots[0:1, ])
+                attention_image = visualize_reward_predictor_attention(images[0], reconstructions[0], rewards[0], predicted_rewards_dist.mean.squeeze(2)[0], output_weights, outputs["rgbs"][0], outputs["masks"][0])
+                self.log("reward_predictor_attention", attention_image)
+
+        return {"reward_loss": -masked_log_probs.mean(),
+                "reward_mse_loss": F.mse_loss(predicted_rewards_dist.mean.squeeze(2)[~is_firsts], rewards[~is_firsts]).item()}
+
     def imagine_ahead(self, slots: torch.Tensor, actions: torch.Tensor) -> List[torch.Tensor]:
         self.dynamics_predictor.eval()
         batch_size, sequence_length, num_slots, slot_dim = slots.size()
@@ -387,6 +422,14 @@ class SOLDModuleWithMLPPolicy(SOLDModule):
 
         if self.after_eval:
             with torch.no_grad():
+                # Log metrics
+                predicted_actions = actions_context[:, num_context:]
+                self.log("train/predicted_actions_mean", predicted_actions.mean().item())
+                self.log("train/predicted_actions_std", predicted_actions.std().item())
+                self.log("train/predicted_rewards_mean", predicted_rewards.mean().item())
+                self.log("train/predicted_rewards_std", predicted_rewards.std().item())
+                self.log("train/action_entropy", action_entropies.mean().item())
+
                 # Log visualization of a latent imagination sequence.
                 outputs = self.autoencoder.decode(slots_context[0:1])
                 x_ticks = [''] * num_context
@@ -422,7 +465,8 @@ class SOLDModuleWithMLPPolicy(SOLDModule):
             selected_action = torch.from_numpy(self.env.action_space.sample().astype(np.float32))
         else:
             slots_curr = self._slot_history[:, -1:]
-            action_dist = self.actor(slots_curr.detach(), start=slots_curr.shape[1] - 1)
+            action_dist, features = self.actor(slots_curr.detach(), start=slots_curr.shape[1] - 1, return_feats=True)
+            self._feat_history = features if is_first else torch.cat([self._feat_history, features], dim=1)
             if mode == "train":
                 selected_action = action_dist.sample().squeeze()
             elif mode == "eval":
