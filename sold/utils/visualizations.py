@@ -174,7 +174,7 @@ class AttentionWeightsHook:
 
 
 @torch.no_grad()
-def get_attention_weights(model: nn.Module, slots: torch.Tensor) -> torch.Tensor:
+def get_attention_weights(model: nn.Module, slots: torch.Tensor, stoch_features: Optional[torch.Tensor] = None) -> torch.Tensor:
     batch_size, sequence_length, num_slots, slot_dim = slots.size()
     attention_weights_hook = AttentionWeightsHook()
 
@@ -184,7 +184,10 @@ def get_attention_weights(model: nn.Module, slots: torch.Tensor) -> torch.Tensor
             enable_attention_weights(module)
             hook_handles.append(module.register_forward_hook(attention_weights_hook))
 
-    model(slots.detach(), start=slots.shape[1] - 1)
+    if stoch_features is not None:
+        model(slots.detach(), stoch_features.detach(), start=slots.shape[1] - 1)
+    else:
+        model(slots.detach(), start=slots.shape[1] - 1)
     output_weights = attention_weights_hook.compute_attention_weights(slots.device, num_slots, sequence_length)
 
     for hook_handle in hook_handles:
@@ -193,7 +196,7 @@ def get_attention_weights(model: nn.Module, slots: torch.Tensor) -> torch.Tensor
     return output_weights
 
 
-def get_mlp_slot_importance(model: nn.Module, slots: torch.Tensor) -> torch.Tensor:
+def get_mlp_slot_importance(model: nn.Module, slots: torch.Tensor, stoch_features: Optional[torch.Tensor] = None) -> torch.Tensor:
     """Compute slot importance for MLP-based models using gradient-based analysis."""
     batch_size, sequence_length, num_slots, slot_dim = slots.size()
     
@@ -206,7 +209,10 @@ def get_mlp_slot_importance(model: nn.Module, slots: torch.Tensor) -> torch.Tens
         slots_curr = slots[:, t:t+1].detach().requires_grad_(True)  # Shape: (batch, 1, num_slots, slot_dim)
         
         # Forward pass to get action distribution for this timestep
-        action_dist = model(slots_curr, start=0)  # start=0 since we only have 1 timestep
+        if stoch_features is not None:
+            action_dist = model(slots_curr, stoch_features.detach(), start=0)  # start=0 since we only have 1 timestep
+        else:
+            action_dist = model(slots_curr, start=0)  # start=0 since we only have 1 timestep
         
         # Use action distribution parameters for gradient computation
         if hasattr(action_dist, 'base_dist'):
