@@ -23,37 +23,8 @@ from utils.training import set_seed, print_summary, OnlineModule
 from utils.visualizations import  visualize_reward_prediction, visualize_output_attention, visualize_reward_predictor_attention, get_attention_weights, get_mlp_slot_importance
 
 
-class StochNet(nn.Module):
-    def __init__(self, input_dim, num_slots, output_dim, slot_dim = None):
-        super().__init__()
-
-        if slot_dim is not None:
-            self.stoch_mean = nn.Linear(input_dim + num_slots * slot_dim, output_dim)
-            self.stoch_sigma = nn.Linear(input_dim + num_slots * slot_dim, output_dim)
-        else:
-            self.stoch_mean = nn.Linear(input_dim, output_dim)
-            self.stoch_sigma = nn.Linear(input_dim, output_dim)
-
-    def get_dist(self, mean: torch.Tensor, std: torch.Tensor) -> D.Normal:
-        return D.Normal(mean, std)
-
-    def sample(self, mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
-        if self.training:
-            return mean + std * torch.randn_like(mean).to(mean.device)
-        else:
-            return mean
-
-    def forward(self, x, slots=None):
-        if slots is not None:
-            slots = rearrange(slots, "b t k d -> b t (k d)")
-            x = torch.cat([x, slots], dim=-1)
-        mean = self.stoch_mean(x)
-        std = F.softplus(self.stoch_sigma(x)) + 1e-6
-        return mean, std
-
-
 class StoSOLDModule(OnlineModule):
-    def __init__(self, autoencoder: Autoencoder, dynamics_predictor, actor, critic, reward_predictor, stoch_prior, stoch_post,
+    def __init__(self, autoencoder: Autoencoder, dynamics_predictor, actor, critic, reward_predictor, stoch_net,
                  dynamics_learning_rate: float, dynamics_grad_clip: float,
                  actor_learning_rate: float, actor_grad_clip: float, critic_learning_rate: float,
                  critic_grad_clip: float, reward_learning_rate: float, reward_grad_clip: float,
@@ -88,8 +59,7 @@ class StoSOLDModule(OnlineModule):
         self.dynamics_predictor = dynamics_predictor(
                 num_slots=autoencoder.num_slots, slot_dim=autoencoder.slot_dim, sequence_length=imagination_horizon,
                 action_dim=env.action_space.shape[0], input_buffer_size=sequence_length)
-        self.stoch_prior = stoch_prior(num_slots=autoencoder.num_slots)
-        self.stoch_post = stoch_post(num_slots=autoencoder.num_slots)
+        self.stoch_net = stoch_net(num_slots=autoencoder.num_slots, slot_dim=autoencoder.slot_dim)
 
         self.dynamics_learning_rate = dynamics_learning_rate
         self.dynamics_grad_clip = dynamics_grad_clip
@@ -124,7 +94,7 @@ class StoSOLDModule(OnlineModule):
                 torch.optim.Adam(self.reward_predictor.parameters(), lr=self.reward_learning_rate),
                 torch.optim.Adam(self.actor.parameters(), lr=self.actor_learning_rate),
                 torch.optim.Adam(self.critic.parameters(), lr=self.critic_learning_rate),
-                torch.optim.Adam(chain(self.stoch_prior.parameters(), self.stoch_post.parameters()), lr=self.stoch_learning_rate)]
+                torch.optim.Adam(self.stoch_net.parameters(), lr=self.stoch_learning_rate)]
 
     def training_step(self, batch, batch_index: int) -> STEP_OUTPUT:
         dynamics_optimizer, reward_optimizer, actor_optimizer, critic_optimizer, stoch_optimizer = self.optimizers()
@@ -176,7 +146,7 @@ class StoSOLDModule(OnlineModule):
         critic_optimizer.zero_grad()
         outputs |= self.compute_actor_loss(lambda_returns, predicted_values_targ, action_log_probs, action_entropies)
         outputs |= self.compute_critic_loss(predicted_values_dist, lambda_returns, predicted_values_targ)
-        self.manual_backward(outputs["actor_loss"] + outputs["stoch_prior_loss"], retain_graph=True)
+        self.manual_backward(outputs["actor_loss"])
         self.clip_gradients(actor_optimizer, gradient_clip_val=self.actor_grad_clip, gradient_clip_algorithm="norm")
         self.manual_backward(outputs["critic_loss"])
         self.clip_gradients(critic_optimizer, gradient_clip_val=self.critic_grad_clip, gradient_clip_algorithm="norm")
@@ -187,7 +157,7 @@ class StoSOLDModule(OnlineModule):
         for key, value in outputs.items():
             if key.endswith("_loss"):
                 self.log("train/" + key, value)
-        self.log_gradients(model_names=("reward_predictor", "actor", "critic"))
+        self.log_gradients(model_names=("reward_predictor", "actor", "critic", "stoch_net"))
         return outputs
 
     def compute_dynamics_loss(self, images: torch.Tensor, slots: torch.Tensor, actions: torch.Tensor) -> Dict[str, Any]:
@@ -260,16 +230,24 @@ class StoSOLDModule(OnlineModule):
             slots_context = slots[:, :num_context].detach()
             actions_context = actions[:, 1:num_context].detach()
 
-        stoch_features = []
+        with FreezeParameters([self.actor, self.stoch_net]):
+            init_stoch = self.stoch_net.init_state(batch_size, slots_context.device)
+            features = self.actor.aggregate(slots_context.detach())
+            stoch_dist = self.stoch_net(features, slots=slots_context, mode="post")
+            stoch_features = stoch_dist.rsample()
+            stoch_features = torch.cat([init_stoch, stoch_features], dim=1).detach()
+            
         # Actor update
         # Freeze models except action model and imagine next states
-        with FreezeParameters([self.reward_predictor, self.stoch_prior, self.stoch_post, self.critic]):
+        with FreezeParameters([self.reward_predictor, self.stoch_net, self.critic]):
             for t in range(self.imagination_horizon):
+                features_curr = features[:, -1:]
+                stoch_dist = self.stoch_net(features_curr, mode="prior")
+                stoch_features_curr = stoch_dist.rsample()
+                stoch_features = torch.cat([stoch_features, stoch_features_curr], dim=1)
+
                 features = self.actor.aggregate(slots_context.detach(), start=slots_context.shape[1] - 1)
-                stoch_mean, stoch_std = self.stoch_prior(features)
-                stoch_features_curr = self.stoch_prior.sample(stoch_mean, stoch_std)
-                action_dist = self.actor.output(features, stoch_features)
-                action_dist = self.actor.get_dist(action_dist.mean, action_dist.std)
+                action_dist = self.actor.output(features, stoch_features_curr.detach())
                 selected_action = action_dist.rsample().squeeze(1)
                 actions_context = torch.cat([actions_context, selected_action.unsqueeze(1)], dim=1)
                 action_log_probs.append(action_dist.log_prob(selected_action.unsqueeze(1)))
@@ -277,11 +255,8 @@ class StoSOLDModule(OnlineModule):
 
                 predicted_slots = self.dynamics_predictor.predict_slots(slots_context, actions_context, steps=1, num_context=slots_context.shape[1])
                 slots_context = torch.cat([slots_context, predicted_slots], dim=1)
-                stoch_features.append(stoch_features_curr)
 
-        stoch_features = torch.stack(stoch_features, dim=1)
-
-        with FreezeParameters([self.reward_predictor, self.stoch_prior, self.stoch_post, self.critic]):
+        with FreezeParameters([self.reward_predictor, self.stoch_net, self.critic]):
             predicted_rewards = self.reward_predictor(slots_context, start=num_context).mean.squeeze()
             predicted_values = self.critic(slots_context, stoch_features, start=num_context).mean.squeeze()
 
@@ -292,8 +267,9 @@ class StoSOLDModule(OnlineModule):
 
         # Value update
         slots_context = slots_context.detach()
+        stoch_features = stoch_features.detach()
         # Predict imagined values
-        with FreezeParameters([self.stoch_prior, self.stoch_post]):
+        with FreezeParameters([self.stoch_net]):
             predicted_values_targ = self.critic_target(slots_context[:, :-1], stoch_features, start=num_context - 1).mean.squeeze()
             predicted_values_dist = self.critic(slots_context[:, :-1], stoch_features, start=num_context - 1)
 
@@ -369,11 +345,8 @@ class StoSOLDModule(OnlineModule):
         with FreezeParameters([self.actor]):
             features = self.actor.aggregate(slots)
 
-        stoch_prior_mean, stoch_prior_std = self.stoch_prior(features)
-        stoch_post_mean, stoch_post_std = self.stoch_post(features, slots=slots)
-
-        stoch_prior_dist = self.stoch_prior.get_dist(stoch_prior_mean, stoch_prior_std)
-        stoch_post_dist = self.stoch_post.get_dist(stoch_post_mean, stoch_post_std)
+        stoch_post_dist = self.stoch_net(features, slots=slots, mode="post")
+        stoch_prior_dist = self.stoch_net(features[:, :-1], mode="prior")
 
         stoch_prior_loss = D.kl_divergence(stoch_post_dist, stoch_prior_dist)
 
@@ -391,11 +364,22 @@ class StoSOLDModule(OnlineModule):
         if mode == "random":
             selected_action = torch.from_numpy(self.env.action_space.sample().astype(np.float32))
         else:
-            features = self.actor.aggregate(slots, start=slots.shape[1] - 1)
-            stoch_mean, stoch_std = self.stoch_post(features, slots=slots)
-            stoch_features = self.stoch_post.sample(stoch_mean, stoch_std)
-            action_dist, features = self.actor.output(features, stoch_features, return_feats=True)
+            features = self.actor.aggregate(self._slot_history, start=self._slot_history.shape[1] - 1)
             self._feat_history = features if is_first else torch.cat([self._feat_history, features], dim=1)
+
+            if is_first:
+                stoch_features = self.stoch_net.init_state(slots.shape[0], slots.device)
+            else:
+                stoch_dist = self.stoch_net(self._feat_history, slots=self._slot_history, mode="post")
+                if mode == "train":
+                    stoch_features = stoch_dist.rsample()
+                elif mode == "eval":
+                    stoch_features = stoch_dist.mode
+                else:
+                    raise ValueError(f"Invalid mode: {mode}")
+
+            action_dist, _ = self.actor.output(features, stoch_features[:, -1:], return_feats=True)
+
             self._stoch_history = stoch_features if is_first else torch.cat([self._stoch_history, stoch_features], dim=1)
             if mode == "train":
                 selected_action = action_dist.sample().squeeze()

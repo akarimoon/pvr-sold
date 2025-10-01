@@ -2,7 +2,7 @@
 defaults:
   - callbacks: sold
   - hydra: default
-  - logger: tensorboard
+  - logger: wandb
   - trainer: online
   - _self_
 
@@ -35,7 +35,7 @@ model:
   reward_learning_rate: 0.0001
   reward_grad_clip: 10.0
   stoch_learning_rate: 0.00003
-  stoch_grad_clip: 10.0
+  stoch_grad_clip: 50.0
 
   finetune_autoencoder: False  # Whether to finetune the autoencoder model.
   autoencoder_learning_rate: 0.0001
@@ -95,18 +95,28 @@ model:
 #      kernel_sizes: [ 3, 3, 3, 3 ]
 #      strides: [ 2, 2, 2, 2 ]
 
-  stoch_prior:
-    _target_: train_stosold.StochNet
-    _partial_: True
-    input_dim: 256
-    output_dim: 256
+  # stoch_prior:
+  #   _target_: modeling.stosold.stoch_net.StochPrior
+  #   _partial_: True
+  #   input_dim: 256
+  #   output_dim: 256
+  #   initial: "zeros"
 
-  stoch_post:
-    _target_: train_stosold.StochNet
+  # stoch_post:
+  #   _target_: modeling.stosold.stoch_net.StochPosterior
+  #   _partial_: True
+  #   input_dim: 256
+  #   output_dim: 256
+  #   slot_dim: 128
+  #   initial: "zeros"
+
+  stoch_net:
+    _target_: modeling.stosold.stoch_net.StochNet
     _partial_: True
     input_dim: 256
     output_dim: 256
-    slot_dim: 128
+    initial: "zeros"
+    bound_mean_std: True
 
   dynamics_predictor:
     _target_: modeling.sold.dynamics.make_ocvp_seq_dynamics_model
