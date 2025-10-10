@@ -182,4 +182,5 @@ sold/scripts/
 sold/wandb/
 checkpoints/autoencoder/*
 checkpoints/sold/*
+checkpoints/stosold/*
 my_experiments/*
